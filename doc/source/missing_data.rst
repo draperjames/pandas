@@ -36,7 +36,7 @@ When / why does data become missing?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Some might quibble over our usage of *missing*. By "missing" we simply mean
-**null** or "not present for whatever reason". Many data sets simply arrive with
+**NA** ("not available") or "not present for whatever reason". Many data sets simply arrive with
 missing data, either because it exists and was not collected or it never
 existed. For example, in a collection of financial time series, some of the time
 series might start on different dates. Thus, values prior to the start date
@@ -63,27 +63,27 @@ to handling missing data. While ``NaN`` is the default missing value marker for
 reasons of computational speed and convenience, we need to be able to easily
 detect this value with data of different types: floating point, integer,
 boolean, and general object. In many cases, however, the Python ``None`` will
-arise and we wish to also consider that "missing" or "null".
+arise and we wish to also consider that "missing" or "not available" or "NA".
 
 .. note::
 
    Prior to version v0.10.0 ``inf`` and ``-inf`` were also
-   considered to be "null" in computations. This is no longer the case by
-   default; use the ``mode.use_inf_as_null`` option to recover it.
+   considered to be "NA" in computations. This is no longer the case by
+   default; use the ``mode.use_inf_as_na`` option to recover it.
 
-.. _missing.isnull:
+.. _missing.isna:
 
 To make detecting missing values easier (and across different array dtypes),
-pandas provides the :func:`~pandas.core.common.isnull` and
-:func:`~pandas.core.common.notnull` functions, which are also methods on
+pandas provides the :func:`isna` and
+:func:`notna` functions, which are also methods on
 ``Series`` and ``DataFrame`` objects:
 
 .. ipython:: python
 
    df2['one']
-   pd.isnull(df2['one'])
-   df2['four'].notnull()
-   df2.isnull()
+   pd.isna(df2['one'])
+   df2['four'].notna()
+   df2.isna()
 
 .. warning::
 
@@ -113,7 +113,7 @@ pandas objects provide intercompatibility between ``NaT`` and ``NaN``.
    df2 = df.copy()
    df2['timestamp'] = pd.Timestamp('20120101')
    df2
-   df2.ix[['a','c','h'],['one','timestamp']] = np.nan
+   df2.loc[['a','c','h'],['one','timestamp']] = np.nan
    df2
    df2.get_dtype_counts()
 
@@ -155,9 +155,9 @@ objects.
 .. ipython:: python
    :suppress:
 
-   df = df2.ix[:, ['one', 'two', 'three']]
-   a = df2.ix[:5, ['one', 'two']].fillna(method='pad')
-   b = df2.ix[:5, ['one', 'two', 'three']]
+   df = df2.loc[:, ['one', 'two', 'three']]
+   a = df2.loc[df2.index[:5], ['one', 'two']].fillna(method='pad')
+   b = df2.loc[df2.index[:5], ['one', 'two', 'three']]
 
 .. ipython:: python
 
@@ -206,7 +206,7 @@ with missing data.
 Filling missing values: fillna
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The **fillna** function can "fill in" NA values with non-null data in a couple
+The **fillna** function can "fill in" NA values with non-NA data in a couple
 of ways, which we illustrate:
 
 **Replace NA with a scalar value**
@@ -220,7 +220,7 @@ of ways, which we illustrate:
 **Fill gaps forward or backward**
 
 Using the same filling arguments as :ref:`reindexing <basics.reindexing>`, we
-can propagate non-null values forward or backward:
+can propagate non-NA values forward or backward:
 
 .. ipython:: python
 
@@ -237,7 +237,7 @@ we can use the `limit` keyword:
 .. ipython:: python
    :suppress:
 
-   df.ix[2:4, :] = np.nan
+   df.iloc[2:4, :] = np.nan
 
 .. ipython:: python
 
@@ -288,7 +288,7 @@ a Series in this case.
 
 .. ipython:: python
 
-        dff.where(pd.notnull(dff), dff.mean(), axis='columns')
+        dff.where(pd.notna(dff), dff.mean(), axis='columns')
 
 
 .. _missing_data.dropna:
@@ -540,7 +540,7 @@ String/Regular Expression Replacement
    <http://docs.python.org/2/reference/lexical_analysis.html#string-literals>`__
    if this is unclear.
 
-Replace the '.' with ``nan`` (str -> str)
+Replace the '.' with ``NaN`` (str -> str)
 
 .. ipython:: python
 

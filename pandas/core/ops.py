@@ -10,28 +10,36 @@ import warnings
 import numpy as np
 import pandas as pd
 import datetime
-from pandas import compat, lib, tslib
-import pandas.index as _index
-from pandas.util.decorators import Appender
-import pandas.computation.expressions as expressions
-from pandas.lib import isscalar
-from pandas.tslib import iNaT
+
+from pandas._libs import (lib, index as libindex,
+                          tslib as libts, algos as libalgos, iNaT)
+
+from pandas import compat
+from pandas.util._decorators import Appender
+import pandas.core.computation.expressions as expressions
+
 from pandas.compat import bind_method
 import pandas.core.missing as missing
-import pandas.algos as _algos
-from pandas.core.common import (_values_from_object, _maybe_match_name,
-                                PerformanceWarning)
-from pandas.types.missing import notnull, isnull
-from pandas.types.common import (needs_i8_conversion,
-                                 is_datetimelike_v_numeric,
-                                 is_integer_dtype, is_categorical_dtype,
-                                 is_object_dtype, is_timedelta64_dtype,
-                                 is_datetime64_dtype, is_datetime64tz_dtype,
-                                 is_bool_dtype, is_datetimetz,
-                                 is_list_like,
-                                 _ensure_object)
-from pandas.types.cast import _maybe_upcast_putmask, _find_common_type
-from pandas.types.generic import ABCSeries, ABCIndex, ABCPeriodIndex
+
+from pandas.errors import PerformanceWarning
+from pandas.core.common import _values_from_object, _maybe_match_name
+from pandas.core.dtypes.missing import notna, isna
+from pandas.core.dtypes.common import (
+    needs_i8_conversion,
+    is_datetimelike_v_numeric,
+    is_integer_dtype, is_categorical_dtype,
+    is_object_dtype, is_timedelta64_dtype,
+    is_datetime64_dtype, is_datetime64tz_dtype,
+    is_bool_dtype, is_datetimetz,
+    is_list_like,
+    is_scalar,
+    _ensure_object)
+from pandas.core.dtypes.cast import maybe_upcast_putmask, find_common_type
+from pandas.core.dtypes.generic import (
+    ABCSeries,
+    ABCIndex,
+    ABCPeriodIndex,
+    ABCDateOffset)
 
 # -----------------------------------------------------------------------------
 # Functions that add arithmetic methods to objects, given arithmetic factory
@@ -145,13 +153,15 @@ def _create_methods(arith_method, comp_method, bool_method,
 def add_methods(cls, new_methods, force, select, exclude):
     if select and exclude:
         raise TypeError("May only pass either select or exclude")
-    methods = new_methods
+
     if select:
         select = set(select)
         methods = {}
         for key, method in new_methods.items():
             if key in select:
                 methods[key] = method
+        new_methods = methods
+
     if exclude:
         for k in exclude:
             new_methods.pop(k, None)
@@ -438,26 +448,28 @@ class _TimeOp(_Op):
 
     def _convert_to_array(self, values, name=None, other=None):
         """converts values to ndarray"""
-        from pandas.tseries.timedeltas import to_timedelta
+        from pandas.core.tools.timedeltas import to_timedelta
 
         ovalues = values
         supplied_dtype = None
         if not is_list_like(values):
             values = np.array([values])
+
         # if this is a Series that contains relevant dtype info, then use this
         # instead of the inferred type; this avoids coercing Series([NaT],
         # dtype='datetime64[ns]') to Series([NaT], dtype='timedelta64[ns]')
         elif (isinstance(values, pd.Series) and
               (is_timedelta64_dtype(values) or is_datetime64_dtype(values))):
             supplied_dtype = values.dtype
-        inferred_type = supplied_dtype or lib.infer_dtype(values)
+
+        inferred_type = lib.infer_dtype(values)
         if (inferred_type in ('datetime64', 'datetime', 'date', 'time') or
                 is_datetimetz(inferred_type)):
             # if we have a other of timedelta, but use pd.NaT here we
             # we are in the wrong path
             if (supplied_dtype is None and other is not None and
                 (other.dtype in ('timedelta64[ns]', 'datetime64[ns]')) and
-                    isnull(values).all()):
+                    isna(values).all()):
                 values = np.empty(values.shape, dtype='timedelta64[ns]')
                 values[:] = iNaT
 
@@ -474,7 +486,7 @@ class _TimeOp(_Op):
                     values = values._values
             elif not (isinstance(values, (np.ndarray, ABCSeries)) and
                       is_datetime64_dtype(values)):
-                values = tslib.array_to_datetime(values)
+                values = libts.array_to_datetime(values)
         elif inferred_type in ('timedelta', 'timedelta64'):
             # have a timedelta, convert to to ns here
             values = to_timedelta(values, errors='coerce', box=False)
@@ -488,7 +500,7 @@ class _TimeOp(_Op):
                 raise TypeError("incompatible type for a datetime/timedelta "
                                 "operation [{0}]".format(name))
         elif inferred_type == 'floating':
-            if (isnull(values).all() and
+            if (isna(values).all() and
                     name in ('__add__', '__radd__', '__sub__', '__rsub__')):
                 values = np.empty(values.shape, dtype=other.dtype)
                 values[:] = iNaT
@@ -502,9 +514,9 @@ class _TimeOp(_Op):
         return values
 
     def _convert_for_datetime(self, lvalues, rvalues):
-        from pandas.tseries.timedeltas import to_timedelta
+        from pandas.core.tools.timedeltas import to_timedelta
 
-        mask = isnull(lvalues) | isnull(rvalues)
+        mask = isna(lvalues) | isna(rvalues)
 
         # datetimes require views
         if self.is_datetime_lhs or self.is_datetime_rhs:
@@ -545,9 +557,9 @@ class _TimeOp(_Op):
 
                 # with tz, convert to UTC
                 if self.is_datetime64tz_lhs:
-                    lvalues = lvalues.tz_localize(None)
+                    lvalues = lvalues.tz_convert('UTC').tz_localize(None)
                 if self.is_datetime64tz_rhs:
-                    rvalues = rvalues.tz_localize(None)
+                    rvalues = rvalues.tz_convert('UTC').tz_localize(None)
 
                 lvalues = lvalues.view(np.int64)
                 rvalues = rvalues.view(np.int64)
@@ -597,10 +609,10 @@ class _TimeOp(_Op):
 
     def _is_offset(self, arr_or_obj):
         """ check if obj or all elements of list-like is DateOffset """
-        if isinstance(arr_or_obj, pd.DateOffset):
+        if isinstance(arr_or_obj, ABCDateOffset):
             return True
         elif is_list_like(arr_or_obj) and len(arr_or_obj):
-            return all(isinstance(x, pd.DateOffset) for x in arr_or_obj)
+            return all(isinstance(x, ABCDateOffset) for x in arr_or_obj)
         return False
 
 
@@ -652,20 +664,20 @@ def _arith_method_SERIES(op, name, str_rep, fill_zeros=None, default_axis=None,
                                           raise_on_error=True, **eval_kwargs)
         except TypeError:
             if isinstance(y, (np.ndarray, ABCSeries, pd.Index)):
-                dtype = _find_common_type([x.dtype, y.dtype])
+                dtype = find_common_type([x.dtype, y.dtype])
                 result = np.empty(x.size, dtype=dtype)
-                mask = notnull(x) & notnull(y)
+                mask = notna(x) & notna(y)
                 result[mask] = op(x[mask], _values_from_object(y[mask]))
             elif isinstance(x, np.ndarray):
                 result = np.empty(len(x), dtype=x.dtype)
-                mask = notnull(x)
+                mask = notna(x)
                 result[mask] = op(x[mask], y)
             else:
                 raise TypeError("{typ} cannot perform the operation "
                                 "{op}".format(typ=type(x).__name__,
                                               op=str_rep))
 
-            result, changed = _maybe_upcast_putmask(result, ~mask, np.nan)
+            result, changed = maybe_upcast_putmask(result, ~mask, np.nan)
 
         result = missing.fill_zeros(result, x, y, name, fill_zeros)
         return result
@@ -678,12 +690,12 @@ def _arith_method_SERIES(op, name, str_rep, fill_zeros=None, default_axis=None,
             if isinstance(rvalues, ABCSeries):
                 if is_object_dtype(rvalues):
                     # if dtype is object, try elementwise op
-                    return _algos.arrmap_object(rvalues,
-                                                lambda x: op(lvalues, x))
+                    return libalgos.arrmap_object(rvalues,
+                                                  lambda x: op(lvalues, x))
             else:
                 if is_object_dtype(lvalues):
-                    return _algos.arrmap_object(lvalues,
-                                                lambda x: op(x, rvalues))
+                    return libalgos.arrmap_object(lvalues,
+                                                  lambda x: op(x, rvalues))
             raise
 
     def wrapper(left, right, name=name, na_op=na_op):
@@ -752,7 +764,7 @@ def _comp_method_SERIES(op, name, str_rep, masker=False):
         # in either operand
         if is_categorical_dtype(x):
             return op(x, y)
-        elif is_categorical_dtype(y) and not isscalar(y):
+        elif is_categorical_dtype(y) and not is_scalar(y):
             return op(y, x)
 
         if is_object_dtype(x.dtype):
@@ -768,7 +780,7 @@ def _comp_method_SERIES(op, name, str_rep, masker=False):
                 raise TypeError("invalid type comparison")
 
             # numpy does not like comparisons vs None
-            if isscalar(y) and isnull(y):
+            if is_scalar(y) and isna(y):
                 if name == '__ne__':
                     return np.ones(len(x), dtype=bool)
                 else:
@@ -777,13 +789,13 @@ def _comp_method_SERIES(op, name, str_rep, masker=False):
             # we have a datetime/timedelta and may need to convert
             mask = None
             if (needs_i8_conversion(x) or
-                    (not isscalar(y) and needs_i8_conversion(y))):
+                    (not is_scalar(y) and needs_i8_conversion(y))):
 
-                if isscalar(y):
-                    mask = isnull(x)
-                    y = _index.convert_scalar(x, _values_from_object(y))
+                if is_scalar(y):
+                    mask = isna(x)
+                    y = libindex.convert_scalar(x, _values_from_object(y))
                 else:
-                    mask = isnull(x) | isnull(y)
+                    mask = isna(x) | isna(y)
                     y = y.view('i8')
                 x = x.view('i8')
 
@@ -817,7 +829,7 @@ def _comp_method_SERIES(op, name, str_rep, masker=False):
         elif isinstance(other, (np.ndarray, pd.Index)):
             # do not check length of zerodim array
             # as it will broadcast
-            if (not lib.isscalar(lib.item_from_zerodim(other)) and
+            if (not is_scalar(lib.item_from_zerodim(other)) and
                     len(self) != len(other)):
                 raise ValueError('Lengths must match to compare')
 
@@ -853,7 +865,7 @@ def _comp_method_SERIES(op, name, str_rep, masker=False):
 
             with np.errstate(all='ignore'):
                 res = na_op(values, other)
-            if isscalar(res):
+            if is_scalar(res):
                 raise TypeError('Could not compare %s type with Series' %
                                 type(other))
 
@@ -890,7 +902,7 @@ def _bool_method_SERIES(op, name, str_rep):
                 try:
 
                     # let null fall thru
-                    if not isnull(y):
+                    if not isna(y):
                         y = bool(y)
                     result = lib.scalar_binop(x, y, op)
                 except:
@@ -1006,7 +1018,7 @@ missing data in one of the inputs.
 
 Parameters
 ----------
-other: Series or scalar value
+other : Series or scalar value
 fill_value : None or float value, default None (NaN)
     Fill missing (NaN) values with this value. If both Series are
     missing, the result will be missing
@@ -1174,7 +1186,7 @@ def _arith_method_FRAME(op, name, str_rep=None, default_axis='columns',
                 dtype = np.find_common_type([x.dtype, y.dtype], [])
                 result = np.empty(x.size, dtype=dtype)
                 yrav = y.ravel()
-                mask = notnull(xrav) & notnull(yrav)
+                mask = notna(xrav) & notna(yrav)
                 xrav = xrav[mask]
 
                 # we may need to manually
@@ -1189,7 +1201,7 @@ def _arith_method_FRAME(op, name, str_rep=None, default_axis='columns',
                         result[mask] = op(xrav, yrav)
             elif hasattr(x, 'size'):
                 result = np.empty(x.size, dtype=x.dtype)
-                mask = notnull(xrav)
+                mask = notna(xrav)
                 xrav = xrav[mask]
                 if np.prod(xrav.shape):
                     with np.errstate(all='ignore'):
@@ -1199,7 +1211,7 @@ def _arith_method_FRAME(op, name, str_rep=None, default_axis='columns',
                                 "objects of type {x} and {y}".format(
                                     op=name, x=type(x), y=type(y)))
 
-            result, changed = _maybe_upcast_putmask(result, ~mask, np.nan)
+            result, changed = maybe_upcast_putmask(result, ~mask, np.nan)
             result = result.reshape(x.shape)
 
         result = missing.fill_zeros(result, x, y, name, fill_zeros)
@@ -1244,17 +1256,18 @@ def _flex_comp_method_FRAME(op, name, str_rep=None, default_axis='columns',
                             masker=False):
     def na_op(x, y):
         try:
-            result = op(x, y)
+            with np.errstate(invalid='ignore'):
+                result = op(x, y)
         except TypeError:
             xrav = x.ravel()
-            result = np.empty(x.size, dtype=x.dtype)
+            result = np.empty(x.size, dtype=bool)
             if isinstance(y, (np.ndarray, ABCSeries)):
                 yrav = y.ravel()
-                mask = notnull(xrav) & notnull(yrav)
+                mask = notna(xrav) & notna(yrav)
                 result[mask] = op(np.array(list(xrav[mask])),
                                   np.array(list(yrav[mask])))
             else:
-                mask = notnull(xrav)
+                mask = notna(xrav)
                 result[mask] = op(np.array(list(xrav[mask])), y)
 
             if op == operator.ne:  # pragma: no cover
@@ -1271,12 +1284,14 @@ def _flex_comp_method_FRAME(op, name, str_rep=None, default_axis='columns',
         other = _align_method_FRAME(self, other, axis)
 
         if isinstance(other, pd.DataFrame):  # Another DataFrame
-            return self._flex_compare_frame(other, na_op, str_rep, level)
+            return self._flex_compare_frame(other, na_op, str_rep, level,
+                                            try_cast=False)
 
         elif isinstance(other, ABCSeries):
-            return self._combine_series(other, na_op, None, axis, level)
+            return self._combine_series(other, na_op, None, axis, level,
+                                        try_cast=False)
         else:
-            return self._combine_const(other, na_op)
+            return self._combine_const(other, na_op, try_cast=False)
 
     f.__name__ = name
 
@@ -1289,12 +1304,14 @@ def _comp_method_FRAME(func, name, str_rep, masker=False):
         if isinstance(other, pd.DataFrame):  # Another DataFrame
             return self._compare_frame(other, func, str_rep)
         elif isinstance(other, ABCSeries):
-            return self._combine_series_infer(other, func)
+            return self._combine_series_infer(other, func, try_cast=False)
         else:
 
             # straight boolean comparisions we want to allow all columns
             # (regardless of dtype to pass thru) See #4537 for discussion.
-            res = self._combine_const(other, func, raise_on_error=False)
+            res = self._combine_const(other, func,
+                                      raise_on_error=False,
+                                      try_cast=False)
             return res.fillna(True).astype(bool)
 
     f.__name__ = name
@@ -1322,16 +1339,16 @@ def _arith_method_PANEL(op, name, str_rep=None, fill_zeros=None,
 
             # TODO: might need to find_common_type here?
             result = np.empty(len(x), dtype=x.dtype)
-            mask = notnull(x)
+            mask = notna(x)
             result[mask] = op(x[mask], y)
-            result, changed = _maybe_upcast_putmask(result, ~mask, np.nan)
+            result, changed = maybe_upcast_putmask(result, ~mask, np.nan)
 
         result = missing.fill_zeros(result, x, y, name, fill_zeros)
         return result
 
     # work only for scalars
     def f(self, other):
-        if not isscalar(other):
+        if not is_scalar(other):
             raise ValueError('Simple arithmetic with %s can only be '
                              'done with scalar values' %
                              self._constructor.__name__)
@@ -1352,11 +1369,11 @@ def _comp_method_PANEL(op, name, str_rep=None, masker=False):
             result = np.empty(x.size, dtype=bool)
             if isinstance(y, np.ndarray):
                 yrav = y.ravel()
-                mask = notnull(xrav) & notnull(yrav)
+                mask = notna(xrav) & notna(yrav)
                 result[mask] = op(np.array(list(xrav[mask])),
                                   np.array(list(yrav[mask])))
             else:
-                mask = notnull(xrav)
+                mask = notna(xrav)
                 result[mask] = op(np.array(list(xrav[mask])), y)
 
             if op == operator.ne:  # pragma: no cover
@@ -1374,13 +1391,13 @@ def _comp_method_PANEL(op, name, str_rep=None, masker=False):
             axis = self._get_axis_number(axis)
 
         if isinstance(other, self._constructor):
-            return self._compare_constructor(other, na_op)
+            return self._compare_constructor(other, na_op, try_cast=False)
         elif isinstance(other, (self._constructor_sliced, pd.DataFrame,
                                 ABCSeries)):
             raise Exception("input needs alignment for this object [%s]" %
                             self._constructor)
         else:
-            return self._combine_const(other, na_op)
+            return self._combine_const(other, na_op, try_cast=False)
 
     f.__name__ = name
 

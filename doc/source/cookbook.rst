@@ -7,6 +7,7 @@
 
    import pandas as pd
    import numpy as np
+   from pandas.compat import StringIO
 
    import random
    import os
@@ -65,19 +66,19 @@ An if-then on one column
 
 .. ipython:: python
 
-   df.ix[df.AAA >= 5,'BBB'] = -1; df
+   df.loc[df.AAA >= 5,'BBB'] = -1; df
 
 An if-then with assignment to 2 columns:
 
 .. ipython:: python
 
-   df.ix[df.AAA >= 5,['BBB','CCC']] = 555; df
+   df.loc[df.AAA >= 5,['BBB','CCC']] = 555; df
 
 Add another line with different logic, to do the -else
 
 .. ipython:: python
 
-   df.ix[df.AAA < 5,['BBB','CCC']] = 2000; df
+   df.loc[df.AAA < 5,['BBB','CCC']] = 2000; df
 
 Or use pandas where after you've set up a mask
 
@@ -148,7 +149,7 @@ Building Criteria
         {'AAA' : [4,5,6,7], 'BBB' : [10,20,30,40],'CCC' : [100,50,-30,-50]}); df
 
    aValue = 43.0
-   df.ix[(df.CCC-aValue).abs().argsort()]
+   df.loc[(df.CCC-aValue).abs().argsort()]
 
 `Dynamically reduce a list of criteria using a binary operators
 <http://stackoverflow.com/questions/21058254/pandas-boolean-operation-in-a-python-list/21058331>`__
@@ -216,9 +217,9 @@ There are 2 explicit slicing methods, with a third general case
 
    df.loc['bar':'kar'] #Label
 
-   #Generic
-   df.ix[0:3] #Same as .iloc[0:3]
-   df.ix['bar':'kar'] #Same as .loc['bar':'kar']
+   # Generic
+   df.iloc[0:3]
+   df.loc['bar':'kar']
 
 Ambiguity arises when an index consists of integers with a non-zero start or non-unit increment.
 
@@ -229,9 +230,6 @@ Ambiguity arises when an index consists of integers with a non-zero start or non
    df2.iloc[1:3] #Position-oriented
 
    df2.loc[1:3] #Label-oriented
-
-   df2.ix[1:3] #General, will mimic loc (label-oriented)
-   df2.ix[0:3] #General, will mimic iloc (position-oriented), as loc[0:3] would raise a KeyError
 
 `Using inverse operator (~) to take the complement of a mask
 <http://stackoverflow.com/questions/14986510/picking-out-elements-based-on-complement-of-indices-in-python-pandas>`__
@@ -439,7 +437,7 @@ Fill forward a reversed timeseries
 .. ipython:: python
 
    df = pd.DataFrame(np.random.randn(6,1), index=pd.date_range('2013-08-01', periods=6, freq='B'), columns=list('A'))
-   df.ix[3,'A'] = np.nan
+   df.loc[df.index[3], 'A'] = np.nan
    df
    df.reindex(df.index[::-1]).ffill()
 
@@ -544,7 +542,7 @@ Unlike agg, apply's callable is passed a sub-DataFrame which gives you access to
 
    agg_n_sort_order = code_groups[['data']].transform(sum).sort_values(by='data')
 
-   sorted_df = df.ix[agg_n_sort_order.index]
+   sorted_df = df.loc[agg_n_sort_order.index]
 
    sorted_df
 
@@ -778,11 +776,17 @@ Resampling
 
 The :ref:`Resample <timeseries.resampling>` docs.
 
-`TimeGrouping of values grouped across time
-<http://stackoverflow.com/questions/15297053/how-can-i-divide-single-values-of-a-dataframe-by-monthly-averages>`__
+`Using Grouper instead of TimeGrouper for time grouping of values
+<https://stackoverflow.com/questions/15297053/how-can-i-divide-single-values-of-a-dataframe-by-monthly-averages>`__
 
-`TimeGrouping #2
-<http://stackoverflow.com/questions/14569223/timegrouper-pandas>`__
+`Time grouping with some missing values
+<https://stackoverflow.com/questions/33637312/pandas-grouper-by-frequency-with-completeness-requirement>`__
+
+`Valid frequency arguments to Grouper
+<http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases>`__
+
+`Grouping using a MultiIndex
+<https://stackoverflow.com/questions/41483763/pandas-timegrouper-on-multiindex>`__
 
 `Using TimeGrouper and another grouping to create subgroups, then apply a custom function
 <https://github.com/pandas-dev/pandas/issues/3791>`__
@@ -907,13 +911,10 @@ CSV
 
 The :ref:`CSV <io.read_csv_table>` docs
 
-`read_csv in action <http://wesmckinney.com/blog/?p=635>`__
+`read_csv in action <http://wesmckinney.com/blog/update-on-upcoming-pandas-v0-10-new-file-parser-other-performance-wins/>`__
 
 `appending to a csv
 <http://stackoverflow.com/questions/17134942/pandas-dataframe-output-end-of-csv>`__
-
-`how to read in multiple files, appending to create a single dataframe
-<http://stackoverflow.com/questions/25210819/speeding-up-data-import-function-pandas-and-appending-to-dataframe/25210900#25210900>`__
 
 `Reading a csv chunk-by-chunk
 <http://stackoverflow.com/questions/11622652/large-persistent-dataframe-in-pandas/12193309#12193309>`__
@@ -944,6 +945,42 @@ using that handle to read.
 
 `Write a multi-row index CSV without writing duplicates
 <http://stackoverflow.com/questions/17349574/pandas-write-multiindex-rows-with-to-csv>`__
+
+.. _cookbook.csv.multiple_files:
+
+Reading multiple files to create a single DataFrame
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The best way to combine multiple files into a single DataFrame is to read the individual frames one by one, put all
+of the individual frames into a list, and then combine the frames in the list using :func:`pd.concat`:
+
+.. ipython:: python
+
+    for i in range(3):
+        data = pd.DataFrame(np.random.randn(10, 4))
+        data.to_csv('file_{}.csv'.format(i))
+
+    files = ['file_0.csv', 'file_1.csv', 'file_2.csv']
+    result = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+
+You can use the same approach to read all files matching a pattern.  Here is an example using ``glob``:
+
+.. ipython:: python
+
+    import glob
+    files = glob.glob('file_*.csv')
+    result = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+
+Finally, this strategy will work with the other ``pd.read_*(...)`` functions described in the :ref:`io docs<io>`.
+
+.. ipython:: python
+    :suppress:
+
+    for i in range(3):
+        os.remove('file_{}.csv'.format(i))
+
+Parsing date components in multi-columns
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Parsing date components in multi-columns is faster with a format
 
@@ -985,9 +1022,6 @@ Skip row between header and data
 
 .. ipython:: python
 
-    from io import StringIO
-    import pandas as pd
-
     data = """;;;;
      ;;;;
      ;;;;
@@ -1014,7 +1048,7 @@ Option 1: pass rows explicitly to skiprows
 
 .. ipython:: python
 
-    pd.read_csv(StringIO(data.decode('UTF-8')), sep=';', skiprows=[11,12],
+    pd.read_csv(StringIO(data), sep=';', skiprows=[11,12],
             index_col=0, parse_dates=True, header=10)
 
 Option 2: read column names and then data
@@ -1022,13 +1056,10 @@ Option 2: read column names and then data
 
 .. ipython:: python
 
-    pd.read_csv(StringIO(data.decode('UTF-8')), sep=';',
-            header=10, parse_dates=True, nrows=10).columns
-    columns = pd.read_csv(StringIO(data.decode('UTF-8')), sep=';',
-                      header=10, parse_dates=True, nrows=10).columns
-    pd.read_csv(StringIO(data.decode('UTF-8')), sep=';',
+    pd.read_csv(StringIO(data), sep=';', header=10, nrows=10).columns
+    columns = pd.read_csv(StringIO(data), sep=';', header=10, nrows=10).columns
+    pd.read_csv(StringIO(data), sep=';', index_col=0,
                 header=12, parse_dates=True, names=columns)
-
 
 
 .. _cookbook.sql:
